@@ -102,7 +102,7 @@ jobs:
           replace_once(
               'submodules/TelegramUI/Sources/AppDelegate.swift',
               '''        guard let appGroupUrl = maybeAppGroupUrl else {
-              self.mainWindow?.presentNative(UIAlertController(title: nil, message: 'Error 2', preferredStyle: .alert))
+              self.mainWindow?.presentNative(UIAlertController(title: nil, message: "Error 2", preferredStyle: .alert))
               return true
           }
           ''',
@@ -116,14 +116,14 @@ jobs:
           } else {
               let fallbackUrl = FileManager.default
                   .urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-                  .appendingPathComponent('BiogramShared', isDirectory: true)
+                  .appendingPathComponent("BiogramShared", isDirectory: true)
               try? FileManager.default.createDirectory(
                   at: fallbackUrl,
                   withIntermediateDirectories: true,
                   attributes: nil
               )
               appGroupUrl = fallbackUrl
-              NSLog('[Biogram] App Group unavailable; using private fallback container: %s', fallbackUrl.path)
+              NSLog("[Biogram] App Group unavailable; using private fallback container: %@", fallbackUrl.path)
           }
           ''',
           )
@@ -134,23 +134,23 @@ jobs:
               guard let appGroupUrl = FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: sgAppGroupIdentifier()) else {
                   return nil
               }
-              return (appGroupUrl.path as NSString).appendingPathComponent('telegram-data')
+              return (appGroupUrl.path as NSString).appendingPathComponent("telegram-data")
           }
           ''',
               '''private func sgDefaultDataPath() -> String? {
               if let appGroupUrl = FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: sgAppGroupIdentifier()) {
-                  return (appGroupUrl.path as NSString).appendingPathComponent('telegram-data')
+                  return (appGroupUrl.path as NSString).appendingPathComponent("telegram-data")
               }
 
               let fallbackRoot = FileManager.default
                   .urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-                  .appendingPathComponent('BiogramShared', isDirectory: true)
+                  .appendingPathComponent("BiogramShared", isDirectory: true)
               try? FileManager.default.createDirectory(
                   at: fallbackRoot,
                   withIntermediateDirectories: true,
                   attributes: nil
               )
-              return fallbackRoot.appendingPathComponent('telegram-data', isDirectory: true).path
+              return fallbackRoot.appendingPathComponent("telegram-data", isDirectory: true).path
           }
           ''',
           )
@@ -178,7 +178,25 @@ third-party re-signing flows on iOS 26.
         run: |
           set -euo pipefail
           git add -A
-          while IFS=$'\t' read -r mode sha path; do
+          while IFS=
+
+      - name: Commit mirrored and hardened tree
+        run: |
+          set -euo pipefail
+          git add -A
+          if git diff --cached --quiet; then
+            echo 'No changes to commit.'
+            exit 0
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -m 'Sync Biogram and harden iOS 26 sideload startup [skip ci]'
+          git push origin HEAD:main
+# Bootstrap workflow active for initial source sync.
+\t' read -r meta path; do
+            set -- $meta
+            mode="$1"
+            sha="$2"
             [ "$mode" = "160000" ] || continue
             git update-index --add --cacheinfo "160000,$sha,$path"
           done < <(git -C /tmp/biogram-source ls-files --stage)
