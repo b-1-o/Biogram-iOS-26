@@ -1,0 +1,197 @@
+name: Bootstrap Biogram iOS 26
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - .github/workflows/bootstrap-ios26.yml
+
+permissions:
+  contents: write
+
+concurrency:
+  group: biogram-ios26-bootstrap
+  cancel-in-progress: true
+
+jobs:
+  sync-and-fix:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout target repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Save bootstrap workflow
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/biogram-bootstrap
+          cp .github/workflows/bootstrap-ios26.yml /tmp/biogram-bootstrap/bootstrap-ios26.yml
+
+      - name: Clone current Biogram source snapshot
+        run: |
+          set -euo pipefail
+          rm -rf /tmp/biogram-source
+          git clone --depth 1 --branch biogram-core-stage1 --no-recurse-submodules https://github.com/b-1-o/Biogram.git /tmp/biogram-source
+
+      - name: Mirror source working tree
+        run: |
+          set -euo pipefail
+          rsync -a --delete --exclude '.git' --exclude '.github/workflows/bootstrap-ios26.yml' /tmp/biogram-source/ ./
+          mkdir -p .github/workflows
+          cp /tmp/biogram-bootstrap/bootstrap-ios26.yml .github/workflows/bootstrap-ios26.yml
+
+      - name: Apply iOS 26 sideload hardening
+        run: |
+          set -euo pipefail
+          python3 <<'PY'
+          from pathlib import Path
+
+          def replace_once(path: str, old: str, new: str):
+              p = Path(path)
+              text = p.read_text(encoding='utf-8')
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f'{path}: expected exactly 1 match, found {count}')
+              p.write_text(text.replace(old, new), encoding='utf-8')
+
+          replace_once(
+              'submodules/TelegramUI/Sources/AppDelegate.swift',
+              '''        self.window = window
+          self.nativeWindow = window
+          // MARK: Swiftgram
+          if sgHardReset(present: self.mainWindow?.presentNative, beforePresent: { self.window?.makeKeyAndVisible() }) {
+              return true
+          }
+          //
+          ''',
+              '''        self.window = window
+          self.nativeWindow = window
+          // iOS 26 sideload hardening: make the native window visible before any optional
+          // startup path can return early. This prevents a silent black screen.
+          self.window?.makeKeyAndVisible()
+
+          // MARK: Swiftgram
+          if sgHardReset(present: self.mainWindow?.presentNative, beforePresent: { self.window?.makeKeyAndVisible() }) {
+              return true
+          }
+          //
+          ''',
+          )
+
+          replace_once(
+              'submodules/TelegramUI/Sources/AppDelegate.swift',
+              '''        let configuration = URLSessionConfiguration.background(withIdentifier: identifier)
+          configuration.sharedContainerIdentifier = appGroupName
+          configuration.isDiscretionary = false
+          ''',
+              '''        let configuration = URLSessionConfiguration.background(withIdentifier: identifier)
+          // Personal/free signing and third-party sideloaders may not be allowed to
+          // carry the App Group entitlement. Background URL sessions must not reference
+          // a shared container that the signed app cannot access.
+          if FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: appGroupName) != nil {
+              configuration.sharedContainerIdentifier = appGroupName
+          }
+          configuration.isDiscretionary = false
+          ''',
+          )
+
+          replace_once(
+              'submodules/TelegramUI/Sources/AppDelegate.swift',
+              '''        guard let appGroupUrl = maybeAppGroupUrl else {
+              self.mainWindow?.presentNative(UIAlertController(title: nil, message: 'Error 2', preferredStyle: .alert))
+              return true
+          }
+          ''',
+              '''        // iOS 26 sideload mode: use a private application-support container when
+          // the signed app does not have the App Group entitlement. App Group storage is
+          // still preferred when available, so normal/App Store builds keep the original
+          // shared-storage behavior.
+          let appGroupUrl: URL
+          if let sharedAppGroupUrl = maybeAppGroupUrl {
+              appGroupUrl = sharedAppGroupUrl
+          } else {
+              let fallbackUrl = FileManager.default
+                  .urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+                  .appendingPathComponent('BiogramShared', isDirectory: true)
+              try? FileManager.default.createDirectory(
+                  at: fallbackUrl,
+                  withIntermediateDirectories: true,
+                  attributes: nil
+              )
+              appGroupUrl = fallbackUrl
+              NSLog('[Biogram] App Group unavailable; using private fallback container: %s', fallbackUrl.path)
+          }
+          ''',
+          )
+
+          replace_once(
+              'Swiftgram/SGDBReset/Sources/File.swift',
+              '''private func sgDefaultDataPath() -> String? {
+              guard let appGroupUrl = FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: sgAppGroupIdentifier()) else {
+                  return nil
+              }
+              return (appGroupUrl.path as NSString).appendingPathComponent('telegram-data')
+          }
+          ''',
+              '''private func sgDefaultDataPath() -> String? {
+              if let appGroupUrl = FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: sgAppGroupIdentifier()) {
+                  return (appGroupUrl.path as NSString).appendingPathComponent('telegram-data')
+              }
+
+              let fallbackRoot = FileManager.default
+                  .urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+                  .appendingPathComponent('BiogramShared', isDirectory: true)
+              try? FileManager.default.createDirectory(
+                  at: fallbackRoot,
+                  withIntermediateDirectories: true,
+                  attributes: nil
+              )
+              return fallbackRoot.appendingPathComponent('telegram-data', isDirectory: true).path
+          }
+          ''',
+          )
+
+          Path('IOS26_SIDELOAD.md').write_text(
+              '''# Biogram iOS 26 Sideload Build
+
+This fork is based on the current Biogram iOS source snapshot.
+
+The iOS 26 build keeps App Group storage when it is available, but falls back to the
+normal app sandbox when a sideloader cannot authorize the App Group entitlement.
+
+The startup window is made visible before optional initialization paths can return.
+Background URL sessions also avoid setting a shared-container identifier when the
+signed app does not have access to that container.
+
+This is intended to eliminate the silent black-screen launch path seen after some
+third-party re-signing flows on iOS 26.
+''',
+              encoding='utf-8',
+          )
+          PY
+
+      - name: Restore source submodule links in target index
+        run: |
+          set -euo pipefail
+          git add -A
+          while IFS=$'\t' read -r mode sha path; do
+            [ "$mode" = "160000" ] || continue
+            git update-index --add --cacheinfo "160000,$sha,$path"
+          done < <(git -C /tmp/biogram-source ls-files --stage)
+
+      - name: Commit mirrored and hardened tree
+        run: |
+          set -euo pipefail
+          git add -A
+          if git diff --cached --quiet; then
+            echo 'No changes to commit.'
+            exit 0
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -m 'Sync Biogram and harden iOS 26 sideload startup [skip ci]'
+          git push origin HEAD:main
