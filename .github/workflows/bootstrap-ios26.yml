@@ -1,12 +1,161 @@
-name: Actions Smoke Test
+name: Mirror Biogram and harden iOS 26
 
 on:
   push:
     branches: [main]
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
-  smoke:
+  mirror-and-fix:
     runs-on: ubuntu-latest
     steps:
-      - run: echo "GitHub Actions runner is alive"
+      - name: Checkout target
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Mirror Biogram source
+        run: |
+          set -euo pipefail
+          rm -rf "$RUNNER_TEMP/biogram-source"
+          git clone --depth 1 --branch biogram-core-stage1 --no-recurse-submodules https://github.com/b-1-o/Biogram.git "$RUNNER_TEMP/biogram-source"
+          cp ".github/workflows/bootstrap-ios26.yml" "$RUNNER_TEMP/bootstrap-ios26.yml"
+          rsync -a --delete --exclude ".git" --exclude ".github/workflows/bootstrap-ios26.yml" "$RUNNER_TEMP/biogram-source/" "$GITHUB_WORKSPACE/"
+          mkdir -p ".github/workflows"
+          cp "$RUNNER_TEMP/bootstrap-ios26.yml" ".github/workflows/bootstrap-ios26.yml"
+
+      - name: Apply iOS 26 sideload hardening
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          def replace_once(path: str, old: str, new: str):
+              p = Path(path)
+              text = p.read_text(encoding='utf-8')
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f'{path}: expected exactly 1 occurrence, found {count}')
+              p.write_text(text.replace(old, new), encoding='utf-8')
+
+          app = Path('submodules/TelegramUI/Sources/AppDelegate.swift')
+          text = app.read_text(encoding='utf-8')
+          anchor = '        self.nativeWindow = window\n'
+          insertion = ('        // iOS 26 sideload hardening: expose the window before optional startup paths.\n'
+                       '        self.window?.makeKeyAndVisible()\n')
+          if 'self.window?.makeKeyAndVisible()\n        // MARK: Swiftgram' not in text:
+              if text.count(anchor) != 1:
+                  raise SystemExit('AppDelegate.swift: nativeWindow anchor not unique')
+              text = text.replace(anchor, anchor + insertion)
+              app.write_text(text, encoding='utf-8')
+
+          replace_once(
+              'submodules/TelegramUI/Sources/AppDelegate.swift',
+              '''        let configuration = URLSessionConfiguration.background(withIdentifier: identifier)
+        configuration.sharedContainerIdentifier = appGroupName
+        configuration.isDiscretionary = false
+        ''',
+              '''        let configuration = URLSessionConfiguration.background(withIdentifier: identifier)
+        if FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: appGroupName) != nil {
+            configuration.sharedContainerIdentifier = appGroupName
+        }
+        configuration.isDiscretionary = false
+        ''',
+          )
+
+          replace_once(
+              'submodules/TelegramUI/Sources/AppDelegate.swift',
+              '''        guard let appGroupUrl = maybeAppGroupUrl else {
+            self.mainWindow?.presentNative(UIAlertController(title: nil, message: "Error 2", preferredStyle: .alert))
+            return true
+        }
+        ''',
+              '''        let appGroupUrl: URL
+        if let sharedAppGroupUrl = maybeAppGroupUrl {
+            appGroupUrl = sharedAppGroupUrl
+        } else {
+            let fallbackUrl = FileManager.default
+                .urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+                .appendingPathComponent("BiogramShared", isDirectory: true)
+
+            try? FileManager.default.createDirectory(
+                at: fallbackUrl,
+                withIntermediateDirectories: true,
+                attributes: nil
+            )
+
+            appGroupUrl = fallbackUrl
+            NSLog("[Biogram] App Group unavailable; using private fallback container: %@", fallbackUrl.path)
+        }
+        ''',
+          )
+
+          replace_once(
+              'Swiftgram/SGDBReset/Sources/File.swift',
+              '''private func sgDefaultDataPath() -> String? {
+            guard let appGroupUrl = FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: sgAppGroupIdentifier()) else {
+                return nil
+            }
+            return (appGroupUrl.path as NSString).appendingPathComponent("telegram-data")
+        }
+        ''',
+              '''private func sgDefaultDataPath() -> String? {
+            if let appGroupUrl = FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: sgAppGroupIdentifier()) {
+                return (appGroupUrl.path as NSString).appendingPathComponent("telegram-data")
+            }
+
+            let fallbackRoot = FileManager.default
+                .urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+                .appendingPathComponent("BiogramShared", isDirectory: true)
+
+            try? FileManager.default.createDirectory(
+                at: fallbackRoot,
+                withIntermediateDirectories: true,
+                attributes: nil
+            )
+
+            return fallbackRoot.appendingPathComponent("telegram-data", isDirectory: true).path
+        }
+        ''',
+          )
+
+          Path('IOS26_SIDELOAD.md').write_text(
+              '''# Biogram iOS 26 sideload build
+
+The repository mirrors the current Biogram source snapshot and adds an iOS 26 sideload hardening layer.
+
+The App Group is used whenever the signed app has access to it. When a third-party
+re-signing flow cannot authorize the App Group, the main app falls back to its private
+Application Support directory instead of returning before the window becomes visible.
+''',
+              encoding='utf-8',
+          )
+          PY
+
+      - name: Recreate source submodule gitlinks
+        run: |
+          set -euo pipefail
+          while IFS=$'\t' read -r meta path; do
+            set -- $meta
+            mode="$1"
+            sha="$2"
+            if [ "$mode" = "160000" ]; then
+              git update-index --add --cacheinfo "160000,$sha,$path"
+            fi
+          done < <(git -C "$RUNNER_TEMP/biogram-source" ls-files --stage)
+
+      - name: Commit mirrored source and fixes
+        run: |
+          set -euo pipefail
+          git add -A
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          if git diff --cached --quiet; then
+            echo "No changes."
+            exit 0
+          fi
+          git commit -m "Sync Biogram and harden iOS 26 sideload startup [skip ci]"
+          git push origin HEAD:main
