@@ -303,7 +303,9 @@ private func extractAccountManagerState(records: AccountRecordsView<TelegramAcco
         let appGroupName = "group.\(baseAppBundleId)"
 
         let configuration = URLSessionConfiguration.background(withIdentifier: identifier)
-        configuration.sharedContainerIdentifier = appGroupName
+        if FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: appGroupName) != nil {
+            configuration.sharedContainerIdentifier = appGroupName
+        }
         configuration.isDiscretionary = false
         let session = URLSession(configuration: configuration, delegate: self, delegateQueue: .main)
         self.urlSessions.append(session)
@@ -426,6 +428,8 @@ private func extractAccountManagerState(records: AccountRecordsView<TelegramAcco
         }
         self.window = window
         self.nativeWindow = window
+        // iOS 26 sideload hardening: make the native window visible before optional startup paths can return.
+        self.window?.makeKeyAndVisible()
         // MARK: Swiftgram
         if sgHardReset(present: self.mainWindow?.presentNative, beforePresent: { self.window?.makeKeyAndVisible() }) {
             return true
@@ -659,9 +663,22 @@ private func extractAccountManagerState(records: AccountRecordsView<TelegramAcco
             isICloudEnabled: buildConfig.isICloudEnabled
         )
         
-        guard let appGroupUrl = maybeAppGroupUrl else {
-            self.mainWindow?.presentNative(UIAlertController(title: nil, message: "Error 2", preferredStyle: .alert))
-            return true
+        let appGroupUrl: URL
+        if let sharedAppGroupUrl = maybeAppGroupUrl {
+            appGroupUrl = sharedAppGroupUrl
+        } else {
+            let fallbackUrl = FileManager.default
+                .urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+                .appendingPathComponent("BiogramShared", isDirectory: true)
+
+            try? FileManager.default.createDirectory(
+                at: fallbackUrl,
+                withIntermediateDirectories: true,
+                attributes: nil
+            )
+
+            appGroupUrl = fallbackUrl
+            NSLog("[Biogram] App Group unavailable; using private fallback container: %@", fallbackUrl.path)
         }
         
         var isDebugConfiguration = false
