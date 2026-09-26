@@ -195,3 +195,4 @@ third-party re-signing flows on iOS 26.
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git commit -m 'Sync Biogram and harden iOS 26 sideload startup [skip ci]'
           git push origin HEAD:main
+# Bootstrap workflow active for initial source sync.
