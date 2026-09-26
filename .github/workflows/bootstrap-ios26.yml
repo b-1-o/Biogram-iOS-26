@@ -23,7 +23,7 @@ jobs:
           rm -rf "$RUNNER_TEMP/biogram-source"
           git clone --depth 1 --branch biogram-core-stage1 --no-recurse-submodules https://github.com/b-1-o/Biogram.git "$RUNNER_TEMP/biogram-source"
           cp ".github/workflows/bootstrap-ios26.yml" "$RUNNER_TEMP/bootstrap-ios26.yml"
-          rsync -a --delete --exclude ".git" --exclude ".github/workflows/bootstrap-ios26.yml" "$RUNNER_TEMP/biogram-source/" "$GITHUB_WORKSPACE/"
+          rsync -a --delete --exclude ".git" --exclude ".github/workflows/" "$RUNNER_TEMP/biogram-source/" "$GITHUB_WORKSPACE/"
           mkdir -p .github/workflows
           cp "$RUNNER_TEMP/bootstrap-ios26.yml" .github/workflows/bootstrap-ios26.yml
 
