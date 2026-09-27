@@ -58,8 +58,9 @@ jobs:
           with open(path, "r", encoding="utf-8") as f:
               config = json.load(f)
           api_hash = os.environ.get("TELEGRAM_API_HASH", "").strip()
-          if api_hash:
-              config["api_hash"] = api_hash
+          if not api_hash:
+              raise SystemExit("TELEGRAM_API_HASH GitHub Actions secret is missing; refusing to build a non-functional login binary.")
+          config["api_hash"] = api_hash
           config["team_id"] = "FAKE123456"
           config["is_internal_build"] = "true"
           config["is_appstore_build"] = "false"
@@ -70,7 +71,7 @@ jobs:
               f.write("\n")
           print("bundle_id:", config.get("bundle_id"))
           print("team_id:", config.get("team_id"))
-          print("api_hash set:", bool(config.get("api_hash")))
+          print("api_hash configured:", bool(config.get("api_hash")))
           PY
 
           cat build-system/appstore-configuration.json
